@@ -6,7 +6,8 @@ Usage: $(basename "$0") [-h|--help] SEARCH_STRING [OUTFILE]
 
 Arguments:
     SEARCH_STRING           Which pdf to look for
-    OUTFILE                 optional, where to put the output, default: "output.pdf"
+    OUTFILE                 optional, where to put the output, default is the visible
+                            name of the chosen pdf
 
 Options:
     -h, --help              Help message
@@ -60,6 +61,12 @@ split_uuid() {
     echo "$line" | sed -E 's/^.*\t(.*)$/\1/'
 }
 
+split_name() {
+    line=$1
+
+    echo "$line" | sed -E 's/^(.*)\t.*$/\1/'
+}
+
 select_pdf() {
     possible_pdfs="$1"
 
@@ -73,7 +80,7 @@ select_pdf() {
     echo "We found multiple files, choose one" >&2
     PS3="=> "
     select opt in "${options[@]}"; do
-        split_uuid "$opt"
+        echo "$opt"
         break
     done
 }
@@ -156,7 +163,7 @@ while true; do
 done
 
 search_string="$1"
-outfile="${2:-output.pdf}"
+outfile="${2}"
 
 if [[ -z $search_string ]]; then
     echo -e "SEARCH_STRING is empty\n" >&2
@@ -184,7 +191,12 @@ if [[ $search_only == 1 ]]; then
     exit
 fi
 
-pdf_uuid=$(select_pdf "$possible_pdfs")
+selected_option=$(select_pdf "$possible_pdfs")
+
+pdf_uuid=$(split_uuid "$selected_option")
+if [[ $outfile == "" ]]; then
+    outfile="$(split_name "$selected_option").pdf"
+fi
 
 tmpdir="$(mktemp --directory --suffix='.remarkable2pdf')"
 download_data "$remarkable_host" "$remarkable_xochitl_dir" "$pdf_uuid" "$tmpdir"

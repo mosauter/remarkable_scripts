@@ -1,0 +1,199 @@
+#!/bin/bash
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [-h|--help] SEARCH_STRING [OUTFILE]
+
+Arguments:
+    SEARCH_STRING           Which pdf to look for
+    OUTFILE                 optional, where to put the output, default: "output.pdf"
+
+Options:
+    -h, --help              Help message
+    --alpha ALPHA           the alpha value for the template, default: 1
+
+    --download-templates    Download templates before trying to render anything
+
+    --host HOST             Host under which remarkable is reachable, default: "remarkable"
+                            You can also use REMARKABLE_HOST environment variable
+
+    --preserve-data         Don't delete the downloaded data from the /tmp folder
+                            Mainly useful for debugging if something is going wrong
+
+    --search-only           Only search and output every document found in the format:
+                            "VISIBLE_NAME\tUUID"
+EOF
+}
+
+check_connection() {
+    local host="$1"
+
+    echo "Checking connection to host: $host" >&2
+    ssh -o ConnectTimeout=5 -o BatchMode=yes -q "$host" "exit 0"
+
+    # shellcheck disable=SC2181
+    if [[ $? != 0 ]]; then
+        return 10
+    fi
+}
+
+download_templates() {
+    host="$1"
+
+    python -m rmrl.load_templates "$host"
+}
+
+get_possible_pdfs() {
+    host="$1"
+    xochitl_folder="$2"
+    search_string="$3"
+
+    # shellcheck disable=2029
+    pdfs=$(ssh "$host" "grep -i \"$search_string\" $xochitl_folder/*.metadata")
+
+    echo "$pdfs" | grep "visibleName" | sed -Ee 's|.*/([^/]+)\.metadata:.*"visibleName": "(.*)"$|\2\t\1|' -e "s/_/:/g"
+}
+
+split_uuid() {
+    line=$1
+
+    echo "$line" | sed -E 's/^.*\t(.*)$/\1/'
+}
+
+select_pdf() {
+    possible_pdfs="$1"
+
+    mapfile -t options < <(echo "$possible_pdfs")
+
+    if [[ ${#options[@]} == 1 ]]; then
+        split_uuid "${options[0]}"
+        return
+    fi
+
+    echo "We found multiple files, choose one" >&2
+    PS3="=> "
+    select opt in "${options[@]}"; do
+        split_uuid "$opt"
+        break
+    done
+}
+
+download_data() {
+    host=$1
+    xochitl_folder=$2
+    uuid=$3
+    target_dir=$4
+
+    scp -r "$host:$xochitl_folder/$uuid*" "$target_dir"
+}
+
+render() {
+    folder=$1
+    uuid=$2
+    target_file=$3
+    alpha=$4
+
+    python -m rmrl --alpha "$alpha" "$folder/$uuid.pdf" "$target_file"
+}
+
+shortOpts="h"
+longOpts="help,alpha:,download-templates,host:,preserve-data,search-only"
+args=$(getopt -o "$shortOpts" -l "$longOpts" -- "$@")
+
+# shellcheck disable=SC2181
+if [[ $? != 0 ]]; then
+    usage
+    exit 1
+fi
+
+eval set -- "$args"
+
+alpha=1
+download_templates=0
+remarkable_host=${REMARKABLE_HOST:-remarkable}
+remarkable_xochitl_dir=${REMARKABLE_XOCHITL_DIR:-.local/share/remarkable/xochitl}
+preserve_data=0
+search_only=0
+
+while true; do
+    case "$1" in
+        -h | --help)
+            shift
+            usage
+            exit 1
+            ;;
+        --alpha)
+            shift
+            alpha=$1
+            shift
+            ;;
+        --download-templates)
+            shift
+            download_templates=1
+            ;;
+        --host)
+            shift
+            remarkable_host=$1
+            shift
+            ;;
+        --preserve-data)
+            shift
+            preserve_data=1
+            ;;
+        --search-only)
+            shift
+            search_only=1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+search_string="$1"
+outfile="${2:-output.pdf}"
+
+if [[ -z $search_string ]]; then
+    echo -e "SEARCH_STRING is empty\n" >&2
+    usage
+    exit 1
+fi
+
+if [[ ! -d $HOME/.local/share/rmrl/templates/ ]] && [[ $download_templates == 0 ]]; then
+    echo "Warning: Templates are not downloaded yet, so will not be in the render" >&2
+    echo -e "You can use '--download-templates' to do this\n" >&2
+elif [[ $download_templates == 1 ]]; then
+    download_templates "$remarkable_host"
+fi
+
+if ! check_connection "$remarkable_host"; then
+    echo "Connection to host '$remarkable_host' not possible, aborting..." >&2
+    exit 255
+fi
+
+echo -e "Connection successful: host=$remarkable_host\n" >&2
+
+possible_pdfs=$(get_possible_pdfs "$remarkable_host" "$remarkable_xochitl_dir" "$search_string")
+if [[ $search_only == 1 ]]; then
+    echo "$possible_pdfs"
+    exit
+fi
+
+pdf_uuid=$(select_pdf "$possible_pdfs")
+
+tmpdir="$(mktemp --directory --suffix='.remarkable2pdf')"
+download_data "$remarkable_host" "$remarkable_xochitl_dir" "$pdf_uuid" "$tmpdir"
+
+render "$tmpdir" "$pdf_uuid" "$outfile" "$alpha"
+echo "Rendered your pdf to: $target_file" >&2
+
+if [[ $preserve_data != 1 ]]; then
+    rm -rf "$tmpdir"
+else
+    echo "The remaining data is at: $tmpdir" >&2
+fi

@@ -1,0 +1,163 @@
+#!/bin/bash
+# Inspired by Adrian Daerr 2017/2018 - public domain
+
+transferPdf() {
+    local pdfname="$1"
+    local tmpdir="$2"
+    local target_dir="$3"
+
+    uuid="$(uuidgen)"
+    cp -- "$pdfname" "${tmpdir}/${uuid}.pdf"
+    cat <<EOF >>"${tmpdir}/${uuid}.metadata"
+{
+    "deleted": false,
+    "lastModified": "$(date +%s)000",
+    "metadatamodified": false,
+    "modified": false,
+    "parent": "",
+    "pinned": false,
+    "synced": false,
+    "type": "DocumentType",
+    "version": 1,
+    "visibleName": "$(basename -- "$pdfname" .pdf)"
+}
+EOF
+
+    cat <<EOF >"${tmpdir}/${uuid}.content"
+{
+    "extraMetadata": {
+    },
+    "fileType": "pdf",
+    "fontName": "",
+    "lastOpenedPage": 0,
+    "lineHeight": -1,
+    "margins": 100,
+    "pageCount": 1,
+    "textScale": 1,
+    "transform": {
+        "m11": 1,
+        "m12": 1,
+        "m13": 1,
+        "m21": 1,
+        "m22": 1,
+        "m23": 1,
+        "m31": 1,
+        "m32": 1,
+        "m33": 1
+    }
+}
+EOF
+
+    mkdir "${tmpdir}/${uuid}.cache"
+    mkdir "${tmpdir}/${uuid}.highlights"
+    mkdir "${tmpdir}/${uuid}.thumbnails"
+
+    convert -density 300 "$pdfname"'[0]' \
+        -colorspace Gray \
+        -separate -average \
+        -shave 5%x5% \
+        -resize 280x374 \
+        "${tmpdir}/${uuid}.thumbnails/0.jpg"
+
+    echo "Transferring $pdfname as $uuid"
+    scp -r "${tmpdir}/${uuid}."* "$target_dir"
+    rm -rf "${tmpdir}/${uuid}."*
+}
+
+checkConnection() {
+    local host="$1"
+
+    echo "Checking connection to host: $host"
+    ssh -o ConnectTimeout=5 -o BatchMode=yes -q "$host" "exit 0"
+
+    # shellcheck disable=SC2181
+    if [[ $? != 0 ]]; then
+        return 10
+    fi
+}
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [-h|--help] [--no-restart] FILE...
+
+Options:
+    -h, --help          Help message
+    --no-restart        Do not restart xochitl after transfer
+    --host HOST         override the ssh-host
+    --xochitl-dir PATH  override the xochitl-dir
+    --local             use 'local-remarkable' as hostname
+EOF
+}
+
+shortOpts="h"
+longOpts="help,no-restart,host:,xochitl-dir:,local"
+args=$(getopt -o "$shortOpts" -l "$longOpts" -- "$@")
+
+# shellcheck disable=SC2181
+if [[ $? != 0 ]]; then
+    usage
+    exit 1
+fi
+
+eval set -- "$args"
+
+restart="true"
+remarkable_host=${REMARKABLE_HOST:-remarkable}
+remarkable_xochitl_dir=${REMARKABLE_XOCHITL_DIR:-.local/share/remarkable/xochitl/}
+
+while true; do
+    case "$1" in
+        -h | --help)
+            shift
+            usage
+            exit 1
+            ;;
+        --no-restart)
+            shift
+            restart="true"
+            ;;
+        --host)
+            shift
+            remarkable_host="$1"
+            shift
+            ;;
+        --local)
+            shift
+            remarkable_host="local-remarkable"
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+if [[ $# -lt 1 ]]; then
+    usage
+    exit 1
+fi
+
+if ! checkConnection "$remarkable_host"; then
+    echo "Connection to host '$remarkable_host' not possible, aborting..."
+    exit 255
+fi
+
+echo -e "Connection successful: host=$remarkable_host\n"
+
+tmpdir="$(mktemp --directory --suffix='.pdf2remarkable')"
+
+for pdfname in "$@"; do
+    transferPdf "$pdfname" "$tmpdir" "${remarkable_host}:${remarkable_xochitl_dir}"
+done
+
+rmdir "$tmpdir"
+
+if [[ $restart == "true" ]]; then
+    echo "Restarting Xochitl..."
+    ssh "$remarkable_host" "systemctl restart xochitl"
+    echo "Done."
+fi

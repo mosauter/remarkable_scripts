@@ -23,6 +23,16 @@ Options:
 
     --search-only           Only search and output every document found in the format:
                             "VISIBLE_NAME\tUUID"
+
+    -6, --v6                Use rendering methods that work for the v6 format but not
+                            for the v5 format. This will generally be every notebook
+                            that is created when running v3+ systems.
+                            This is the default.
+
+    -5, --v5                Use rendering methods that work for the v5 format but not
+                            for the v6 format. This will be every notebook that was
+                            created on systems running v2, _BUT NOT CHANGED_ while running
+                            the v3 system.
 EOF
 }
 
@@ -95,16 +105,21 @@ download_data() {
 }
 
 render() {
-    folder=$1
-    uuid=$2
-    target_file=$3
-    alpha=$4
+    version_six=$1
+    folder=$2
+    uuid=$3
+    target_file=$4
+    alpha=$5
 
-    python -m rmrl --alpha "$alpha" "$folder/$uuid.pdf" "$target_file"
+    if [[ $version_six == 1 ]]; then
+        python -m rm2pdf --output "$target_file" "$folder/$uuid.content"
+    else
+        python -m rmrl --alpha "$alpha" "$folder/$uuid.pdf" "$target_file"
+    fi
 }
 
-shortOpts="h"
-longOpts="help,alpha:,download-templates,host:,preserve-data,search-only"
+shortOpts="h56"
+longOpts="help,alpha:,download-templates,host:,preserve-data,search-only,v6,v5"
 args=$(getopt -o "$shortOpts" -l "$longOpts" -- "$@")
 
 # shellcheck disable=SC2181
@@ -121,6 +136,7 @@ remarkable_host=${REMARKABLE_HOST:-remarkable}
 remarkable_xochitl_dir=${REMARKABLE_XOCHITL_DIR:-.local/share/remarkable/xochitl}
 preserve_data=0
 search_only=0
+version_six=1
 
 while true; do
     case "$1" in
@@ -150,6 +166,14 @@ while true; do
         --search-only)
             shift
             search_only=1
+            ;;
+        -5 | --v5)
+            shift
+            version_six=0
+            ;;
+        -6 | --v6)
+            shift
+            version_six=1
             ;;
         --)
             shift
@@ -201,7 +225,7 @@ fi
 tmpdir="$(mktemp --directory --suffix='.remarkable2pdf')"
 download_data "$remarkable_host" "$remarkable_xochitl_dir" "$pdf_uuid" "$tmpdir"
 
-render "$tmpdir" "$pdf_uuid" "$outfile" "$alpha"
+render "$version_six" "$tmpdir" "$pdf_uuid" "$outfile" "$alpha"
 echo "Rendered your pdf to: $target_file" >&2
 
 if [[ $preserve_data != 1 ]]; then

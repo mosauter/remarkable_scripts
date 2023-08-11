@@ -14,6 +14,7 @@ Options:
     --alpha ALPHA           the alpha value for the template, default: 1
 
     --download-templates    Download templates before trying to render anything
+                            Default loaction: $template_location
 
     --host HOST             Host under which remarkable is reachable, default: "remarkable"
                             You can also use REMARKABLE_HOST environment variable
@@ -49,9 +50,12 @@ check_connection() {
 }
 
 download_templates() {
-    host="$1"
+    local host="$1"
+    local tablet_template_location="/usr/share/remarkable/templates"
 
-    python -m rmrl.load_templates "$host"
+    mkdir --parents "$template_location"
+
+    scp -r "$host:$tablet_template_location/*.svg" "$template_location"
 }
 
 get_possible_pdfs() {
@@ -101,6 +105,7 @@ download_data() {
     uuid=$3
     target_dir=$4
 
+    echo "Downloading templates..."
     scp -r "$host:$xochitl_folder/$uuid*" "$target_dir"
 }
 
@@ -131,12 +136,13 @@ fi
 eval set -- "$args"
 
 alpha=1
-download_templates=0
+should_download_templates=0
 remarkable_host=${REMARKABLE_HOST:-remarkable}
 remarkable_xochitl_dir=${REMARKABLE_XOCHITL_DIR:-.local/share/remarkable/xochitl}
 preserve_data=0
 search_only=0
 version_six=1
+template_location=$HOME/.cache/remarkable-templates
 
 while true; do
     case "$1" in
@@ -152,7 +158,7 @@ while true; do
             ;;
         --download-templates)
             shift
-            download_templates=1
+            should_download_templates=1
             ;;
         --host)
             shift
@@ -195,10 +201,10 @@ if [[ -z $search_string ]]; then
     exit 1
 fi
 
-if [[ ! -d $HOME/.local/share/rmrl/templates/ ]] && [[ $download_templates == 0 ]]; then
+if [[ ! -d $HOME/.local/share/rmrl/templates/ ]] && [[ $should_download_templates == 0 ]]; then
     echo "Warning: Templates are not downloaded yet, so will not be in the render" >&2
     echo -e "You can use '--download-templates' to do this\n" >&2
-elif [[ $download_templates == 1 ]]; then
+elif [[ $should_download_templates == 1 ]]; then
     download_templates "$remarkable_host"
 fi
 
